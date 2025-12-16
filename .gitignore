@@ -1,0 +1,11 @@
+# Unity auto-generated
+[Ll]ibrary/
+[Tt]emp/
+[Ll]ogs/
+[Uu]ser[Ss]ettings/
+
+# IDE
+.vscode/
+
+# OS
+.DS_Store
