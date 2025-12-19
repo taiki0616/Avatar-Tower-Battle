@@ -1,22 +1,35 @@
+using System.Collections;
 using UnityEngine;
 
 public class CraneController : MonoBehaviour
 {
-    [Header("Prefab to spawn")]
+    public PoseBlockFactory poseBlockFactory;
+
+    [Header("Prefab to spawn (fallback if factory is not set)")]
     public GameObject blockPrefab;
+
+    [Header("Spawn timing")]
+    public float nextSpawnDelay = 0.7f; // 次のブロックまでの待ち時間
 
     [Header("Spawn settings")]
     public Transform spawnPoint;
     public float spawnHeightOffset = 0f;
 
     [Header("Control settings (before drop)")]
-    public float moveSpeed = 4f;       // horizontal speed
-    public float rotateSpeed = 120f;   // degrees per second
-    public float xLimit = 6f;          // left-right boundary
+    public float moveSpeed = 4f;
+    public float rotateSpeed = 120f;
+    public float xLimit = 6f;
+    public float zLimit = 6f;
+
+    [Header("Stop detection")]
+    public float stopSpeedThreshold = 0.05f;
 
     private GameObject currentBlock;
     private Rigidbody currentRb;
     private bool isDropped = false;
+
+    // ★重要：静止判定中にコルーチンを連打しないためのフラグ
+    private bool isSpawningNext = false;
 
     void Start()
     {
@@ -27,10 +40,9 @@ public class CraneController : MonoBehaviour
     {
         if (GameManager.Instance != null && GameManager.Instance.isGameOver)
             return;
-            
+
         if (currentBlock == null) return;
 
-        // Only allow control before dropping
         if (!isDropped)
         {
             HandleMove();
@@ -43,26 +55,37 @@ public class CraneController : MonoBehaviour
         }
         else
         {
-            // If the block is almost stopped, spawn next one (temporary rule)
-            if (currentRb != null && currentRb.linearVelocity.magnitude < 0.05f)
+            // 落下後：ブロックがほぼ静止したら、一定時間待って次を出す
+            if (!isSpawningNext && currentRb != null && currentRb.linearVelocity.magnitude < stopSpeedThreshold)
             {
-                // small delay-ish to avoid instant respawn on first contact
-                // (simple hack: require it to be dropped for a short moment)
-                // You can replace with a coroutine later.
-                SpawnNewBlock();
+                isSpawningNext = true;
+                StartCoroutine(SpawnWithDelay());
             }
         }
     }
 
     void HandleMove()
     {
-        float h = 0f;
-        if (Input.GetKey(KeyCode.A) || Input.GetKey(KeyCode.LeftArrow))  h = -1f;
-        if (Input.GetKey(KeyCode.D) || Input.GetKey(KeyCode.RightArrow)) h =  1f;
+        float x = 0f;
+        float z = 0f;
+
+        // 左右（X）
+        if (Input.GetKey(KeyCode.A) || Input.GetKey(KeyCode.LeftArrow))  x = -1f;
+        if (Input.GetKey(KeyCode.D) || Input.GetKey(KeyCode.RightArrow)) x =  1f;
+
+        // 前後（Z）
+        if (Input.GetKey(KeyCode.W) || Input.GetKey(KeyCode.UpArrow))    z =  1f;
+        if (Input.GetKey(KeyCode.S) || Input.GetKey(KeyCode.DownArrow))  z = -1f;
+
+        Vector3 delta = new Vector3(x, 0f, z);
+        if (delta.sqrMagnitude > 1f) delta.Normalize(); // 斜め移動が速くならないように
 
         Vector3 pos = currentBlock.transform.position;
-        pos.x += h * moveSpeed * Time.deltaTime;
+        pos += delta * moveSpeed * Time.deltaTime;
+
         pos.x = Mathf.Clamp(pos.x, -xLimit, xLimit);
+        pos.z = Mathf.Clamp(pos.z, -zLimit, zLimit);
+
         currentBlock.transform.position = pos;
     }
 
@@ -79,30 +102,53 @@ public class CraneController : MonoBehaviour
     {
         if (currentRb == null) return;
 
-        // Enable physics
         currentRb.isKinematic = false;
         isDropped = true;
-        GameManager.Instance.NextTurn();
+
+        if (GameManager.Instance != null)
+            GameManager.Instance.NextTurn();
+    }
+
+    IEnumerator SpawnWithDelay()
+    {
+        yield return new WaitForSeconds(nextSpawnDelay);
+        SpawnNewBlock();
     }
 
     void SpawnNewBlock()
     {
-        // Clean up reference (do NOT destroy old one)
+        // 参照をリセット
         currentBlock = null;
         currentRb = null;
 
         Vector3 p = spawnPoint != null ? spawnPoint.position : transform.position;
         p.y += spawnHeightOffset;
 
-        GameObject block = Instantiate(blockPrefab, p, Quaternion.identity);
+        GameObject block = null;
 
-        // Ensure it has a Rigidbody but keep it kinematic until dropped
+        if (poseBlockFactory != null)
+        {
+            block = poseBlockFactory.CreatePoseBlock(p, Quaternion.identity);
+        }
+        else if (blockPrefab != null)
+        {
+            block = Instantiate(blockPrefab, p, Quaternion.identity);
+        }
+
+        if (block == null)
+        {
+            Debug.LogError("No block source set. Assign PoseBlockFactory or blockPrefab.");
+            return;
+        }
+
         Rigidbody rb = block.GetComponent<Rigidbody>();
         if (rb == null) rb = block.AddComponent<Rigidbody>();
-        rb.isKinematic = true; // controlled by script until drop
+        rb.isKinematic = true;
 
         currentBlock = block;
         currentRb = rb;
+
         isDropped = false;
+        isSpawningNext = false; // ★次の生成が終わったのでフラグ解除
     }
 }
